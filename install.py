@@ -31,8 +31,11 @@ import msvcrt
 import os
 import subprocess
 import sys
+import time
 
 AUDIO_EXTS = (".mp3", ".wav")
+DEBOUNCE_FILE = os.path.join(os.environ.get("TEMP", os.environ.get("TMP", r"C:\Windows\Temp")), "agy_notify_last.lock")
+DEBOUNCE_SECONDS = 2.0
 
 PLAYER_CODE = """
 import ctypes, sys
@@ -43,6 +46,35 @@ if w.mciSendStringW('open "%s" type %s alias agy_play' % (p, t), None, 0, None) 
     w.mciSendStringW('play agy_play wait', None, 0, None)
     w.mciSendStringW('close agy_play', None, 0, None)
 """
+
+def is_debounced():
+    now = time.time()
+    try:
+        lock_fd = os.open(DEBOUNCE_FILE, os.O_RDWR | os.O_CREAT)
+        with open(lock_fd, "r+", encoding="utf-8", closefd=True) as f:
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                return True
+            try:
+                content = f.read().strip()
+                if content:
+                    last_time = float(content)
+                    if 0 <= (now - last_time) < DEBOUNCE_SECONDS:
+                        return True
+                f.seek(0)
+                f.truncate()
+                f.write(f"{now:.4f}")
+                f.flush()
+            finally:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
 
 def read_stdin_safe():
     try:
@@ -108,6 +140,9 @@ def main():
 
     sound_file = find_sound_file(workspace_paths)
     if sound_file:
+        if is_debounced():
+            print(json.dumps({}))
+            return
         sound_file = os.path.abspath(sound_file)
         device_type = "waveaudio" if sound_file.lower().endswith(".wav") else "mpegvideo"
         DETACHED_PROCESS = 0x00000008
